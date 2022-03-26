@@ -9,4 +9,4 @@ so_stdio.o: so_stdio.c
 	$(CC) -Wall -Wextra -fPIC -c $^ -o $@
 
 clean:
-	rm *.o
+	rm *.o libso_stdio.so
