@@ -12,10 +12,11 @@
 struct _so_file {
     int fd;
     char *buffer;
-    int currsor;
+    int buff_pos;
+    int buff_read_len;
     int feof_flag;
     int ferror_flag;
-
+    char last_op; // r = read; w = write
 };
 
 SO_FILE *so_fopen(const char *pathname, const char *mode) {
@@ -49,22 +50,36 @@ SO_FILE *so_fopen(const char *pathname, const char *mode) {
     so_file->buffer = (char*)calloc(BUFF_LEN, sizeof(char));
 
     if (so_file->buffer == NULL) {
+        so_file->ferror_flag = -1;
         return NULL;
     }
 
     so_file->fd = fd;
-    so_file->currsor = 0;
+    so_file->buff_pos = 0;
     so_file->feof_flag = 0;
     so_file->ferror_flag = 0;
+    so_file->buff_read_len = 0;
+    so_file->last_op ='\0';
 
     return so_file;
 }
 
 int so_fileno(SO_FILE *stream) {
-    return 0;
+    return stream->fd;
 }
 
 int so_fflush(SO_FILE *stream) {
+    int r;
+    if (stream->last_op == 'w') {
+        r = write(stream->fd, stream->buffer, stream->buff_read_len);
+
+        if (r < 0) {
+            stream->ferror_flag = -1;
+            return SO_EOF;
+        }
+
+    }
+
     return 0;
 }
 
@@ -73,11 +88,24 @@ int so_fseek(SO_FILE *stream, long offset, int whence) {
 }
 
 long so_ftell(SO_FILE *stream) {
-    return 0;
+    return stream->buff_pos;
 }
 
 size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
-    return 0;
+    int read_elem = size * nmemb;
+    int ch, i, j;
+
+    for (i = 0; i < read_elem; i++) {
+        ch = so_fgetc(stream);
+
+        if (ch < 0) {
+            return 0;
+        }
+
+        ((char *)ptr)[i] = ch;
+    }
+
+    return read_elem / size;
 }
 
 size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
@@ -85,11 +113,63 @@ size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
 }
 
 int so_fgetc(SO_FILE *stream) {
-    return 0;
+    int r;
+    unsigned char ch;
+
+    if (stream->feof_flag != 0 || stream->buff_pos == SO_EOF) {
+        return SO_EOF;
+    }
+
+    if (stream->buff_pos == 0 || stream->buff_pos >= BUFF_LEN ||
+        stream->buff_pos >= stream->buff_read_len) {
+
+        r = read(stream->fd, stream->buffer, BUFF_LEN);
+
+        if (r < 0) {
+            stream->ferror_flag = -1;
+            return SO_EOF;
+        }
+
+        if (r == 0) {
+            stream->feof_flag = -1;
+            return SO_EOF;
+        }
+        stream->buff_pos = 0;
+        stream->buff_read_len = r;
+    }
+
+    ch = stream->buffer[stream->buff_pos];
+    stream->buff_pos++;
+    stream->last_op = 'r';
+
+    return (unsigned int)ch;
 }
 
 int so_fputc(int c, SO_FILE *stream) {
-    return 0;
+    int r;
+
+    if (stream->buff_read_len >= BUFF_LEN) {
+        int r = write(stream->fd, stream->buffer, stream->buff_read_len);
+
+        if (r < 0) {
+            stream->ferror_flag = -1;
+            return SO_EOF;
+        }
+
+        if (r == 0) {
+            stream->feof_flag = -1;
+            return SO_EOF;
+        }
+
+        stream->buff_read_len = 0;
+        stream->buff_pos = 0;
+    }
+
+    stream->buffer[stream->buff_pos] = (char)c;
+    stream->buff_pos++;
+    stream->buff_read_len++;
+    stream->last_op = 'w';
+    return (unsigned int)stream->buffer[stream->buff_pos - 1];
 }
 
 int so_feof(SO_FILE *stream) {
@@ -110,6 +190,12 @@ int so_pclose(SO_FILE *stream) {
 
 int so_fclose(SO_FILE *stream) {
     int ret;
+
+    ret = so_fflush(stream);
+
+    if (ret == SO_EOF) {
+        return SO_EOF;
+    }
 
     ret = close(stream->fd);
     free(stream->buffer);
