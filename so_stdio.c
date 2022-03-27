@@ -92,8 +92,8 @@ int so_fflush(SO_FILE *stream) {
         }
         stream->buff_pos = 0;
     }
-    memset(stream->buffer, 0, stream->buff_read_len);
-    stream->buff_read_len = 0;
+    // memset(stream->buffer, 0, stream->buff_read_len);
+    // stream->buff_read_len = 0;
     return 0;
 }
 
@@ -126,6 +126,15 @@ int so_fseek(SO_FILE *stream, long offset, int whence) {
 }
 
 long so_ftell(SO_FILE *stream) {
+
+    if (stream->last_op != 'r') {
+        int r = so_fseek(stream, 0, SEEK_CUR);
+
+        if (r < 0) {
+            return SO_EOF;
+        }
+    }
+
     return stream->currsor;
 }
 
@@ -137,7 +146,11 @@ size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
         ch = so_fgetc(stream);
 
         if (ch < 0) {
-            return 0;
+           if (so_feof(stream) != 0) {
+               return i / size;
+           } else {
+               return 0;
+           }
         }
 
         ((char *)ptr)[i] = ch;
@@ -151,10 +164,18 @@ size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
     int i, r;
     char ch;
 
+    // if (stream->last_op == 'r') {
+    //     r = so_fseek(stream, stream->currsor, SEEK_SET);
+
+    //     if (r < 0) {
+    //         stream->ferror_flag = -1;
+    //         return SO_EOF;
+    //     }
+    // }
+
     for (i = 0; i < write_elem; i++) {
         ch = ((char *) ptr)[i];
         r = so_fputc(ch, stream);
-
     }
 
     return nmemb;
@@ -171,22 +192,26 @@ int so_fgetc(SO_FILE *stream) {
 
         r = read(stream->fd, stream->buffer, BUFF_LEN);
 
-        if (r < 0) {
+        if (r <= 0) {
             stream->ferror_flag = SO_EOF;
-            return SO_EOF;
-        }
-
-        if (r == 0) {
             stream->feof_flag = SO_EOF;
             return SO_EOF;
         }
+
+        // if (r == 0) {
+        //     stream->feof_flag = SO_EOF;
+        //     return SO_EOF;
+        // }
         stream->buff_pos = 0;
         stream->buff_read_len = r;
+
+        // stream->currsor += r;
     }
 
     ch = stream->buffer[stream->buff_pos];
     stream->buff_pos++;
     stream->last_op = 'r';
+
     stream->currsor++;
 
     return (unsigned int)ch;
@@ -195,14 +220,18 @@ int so_fgetc(SO_FILE *stream) {
 int so_fputc(int c, SO_FILE *stream) {
     int r;
 
-    // if (strstr(stream->mode, "a") != NULL) {
+    if (stream->last_op == 'r') {
+        r = so_fflush(stream);
+    }
 
-    //     r = so_fseek(stream, 0, SEEK_END);
+    if (strstr(stream->mode, "a") != NULL) {
 
-    //     if (r < 0) {
-    //         return SO_EOF;
-    //     }
-    // }
+        r = lseek(stream->fd, 0, SEEK_END);
+
+        // if (r < 0) {
+        //     return SO_EOF;
+        // }
+    }
 
     stream->last_op = 'w';
 
