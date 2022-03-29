@@ -6,22 +6,46 @@
 #include <string.h>
 #include <sys/wait.h>
 
-
 #include "so_stdio.h"
 
-#define BUFF_LEN 4096
+#define MAX_LEN 4096
 
 struct _so_file {
     int fd;
     char *buffer;
     int buff_pos;
     int currsor;
-    int buff_read_len;
+    int buff_len;
     int feof_flag;
     int ferror_flag;
     char last_op; // r = read; w = write
     int pid;
 };
+
+SO_FILE *init_so_file() {
+    SO_FILE *so_file;
+    so_file = (SO_FILE *)malloc(sizeof(SO_FILE));
+
+    if (so_file == NULL)
+        return NULL;
+
+    so_file->buffer = (char*)calloc(MAX_LEN, sizeof(char));
+
+    if (so_file->buffer == NULL)
+        return NULL;
+
+    so_file->fd = -1;
+    so_file->buff_pos = 0;
+    so_file->feof_flag = 0;
+    so_file->ferror_flag = 0;
+    so_file->buff_len = 0;
+    so_file->last_op ='\0';
+    so_file->currsor = 0;
+    so_file->pid = -1;
+
+    return so_file;
+
+}
 
 SO_FILE *so_fopen(const char *pathname, const char *mode) {
     SO_FILE *so_file;
@@ -47,26 +71,12 @@ SO_FILE *so_fopen(const char *pathname, const char *mode) {
         return NULL;
     }
 
-    so_file = (SO_FILE *)malloc(sizeof(SO_FILE));
+    so_file = init_so_file();
 
-    if (so_file == NULL) {
+    if (so_file == NULL)
         return NULL;
-    }
-
-    so_file->buffer = (char*)calloc(BUFF_LEN, sizeof(char));
-
-    if (so_file->buffer == NULL) {
-        so_file->ferror_flag = -1;
-        return NULL;
-    }
 
     so_file->fd = fd;
-    so_file->buff_pos = 0;
-    so_file->feof_flag = 0;
-    so_file->ferror_flag = 0;
-    so_file->buff_read_len = 0;
-    so_file->last_op ='\0';
-    so_file->currsor = 0;
 
     return so_file;
 }
@@ -76,25 +86,24 @@ int so_fileno(SO_FILE *stream) {
 }
 
 int so_fflush(SO_FILE *stream) {
-    int r;
+    int r, idx;
     if (stream->last_op == 'w') {
-        stream->buff_pos = 0;
-        while (stream->buff_read_len > 0) {
-            r = write(stream->fd, stream->buffer + stream->buff_pos, stream->buff_read_len);
+        idx = 0;
+        while (stream->buff_len > 0) {
+            r = write(stream->fd, stream->buffer + idx, stream->buff_len);
 
-            if (r >= 0) {
-                stream->buff_read_len -= r;
-                stream->buff_pos += r;
-                stream->currsor += r;
-            } else {
+            if (r < 0) {
                 stream->ferror_flag = SO_EOF;
                 return SO_EOF;
             }
+
+            stream->buff_len -= r;
+            idx += r;
         }
-        stream->buff_pos = 0;
     }
-    memset(stream->buffer, 0, stream->buff_read_len);
-    stream->buff_read_len = 0;
+    memset(stream->buffer, 0, stream->buff_len);
+    stream->buff_len = 0;
+    stream->buff_pos = 0;
     return 0;
 }
 
@@ -102,14 +111,14 @@ int so_fseek(SO_FILE *stream, long offset, int whence) {
     int r;
 
     if (stream->last_op == 'r') {
-        stream->buff_read_len = 0;
+        stream->buff_len = 0;
         stream->buff_pos = 0;
-        memset(stream->buffer, 0, stream->buff_read_len);
+        memset(stream->buffer, 0, stream->buff_len);
     } else if (stream->last_op == 'w') {
         r = so_fflush(stream);
 
         if (r < 0) {
-            stream->feof_flag = SO_EOF;
+            stream->ferror_flag = SO_EOF;
             return SO_EOF;
         }
 
@@ -143,15 +152,11 @@ size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
     int read_elem = size * nmemb;
     int ch, i;
 
-    if (stream->ferror_flag != 0 || stream->feof_flag != 0) {
-        return 0;
-    }
-
     for (i = 0; i < read_elem; i++) {
         ch = so_fgetc(stream);
 
         if (ch < 0) {
-           if (so_feof(stream) != 0) {
+           if (stream->feof_flag != 0 || stream->ferror_flag != 0) {
                return i / size;
            } else {
                return 0;
@@ -161,7 +166,7 @@ size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
         ((char *)ptr)[i] = ch;
     }
 
-    return read_elem / size;
+    return nmemb;
 }
 
 size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
@@ -174,9 +179,10 @@ size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
         ch = ((char *) ptr)[i];
         r = so_fputc(ch, stream);
 
-        // if (so_ferror(stream) == SO_EOF || so_feof(stream) == SO_EOF) {
-        //     break;
-        // }
+        if (r < 0 &&
+        (stream->ferror_flag == SO_EOF || stream->feof_flag == SO_EOF)) {
+            return 0;
+        }
     }
 
     return nmemb;
@@ -186,29 +192,26 @@ int so_fgetc(SO_FILE *stream) {
     int r;
     unsigned char ch;
 
-    if (stream->buff_pos == 0 || stream->buff_pos >= stream->buff_read_len) {
+    stream->last_op = 'r';
+
+    if (stream->buff_pos == 0 || stream->buff_pos >= stream->buff_len) {
 
         memset(stream->buffer, 0, stream->buff_pos);
 
-        r = read(stream->fd, stream->buffer, BUFF_LEN);
+        r = read(stream->fd, stream->buffer, MAX_LEN);
 
-        if (r < 0) {
+        if (r <= 0) {
+            stream->feof_flag = SO_EOF;
             stream->ferror_flag = SO_EOF;
             return SO_EOF;
         }
 
-        if (r == 0) {
-            stream->feof_flag = SO_EOF;
-            return SO_EOF;
-        }
         stream->buff_pos = 0;
-        stream->buff_read_len = r;
+        stream->buff_len = r;
     }
 
     ch = stream->buffer[stream->buff_pos];
     stream->buff_pos++;
-    stream->last_op = 'r';
-
     stream->currsor++;
 
     return (unsigned int)ch;
@@ -219,18 +222,17 @@ int so_fputc(int c, SO_FILE *stream) {
 
     stream->last_op = 'w';
 
-    if (stream->buff_read_len == BUFF_LEN) {
+    if (stream->buff_len == MAX_LEN) {
 
-        int r = so_fflush(stream);
+        r = so_fflush(stream);
 
         if (r != 0) {
-            stream->ferror_flag = -1;
             return SO_EOF;
         }
     }
 
-    stream->buffer[stream->buff_read_len] = c;
-    stream->buff_read_len++;
+    stream->buffer[stream->buff_len] = c;
+    stream->buff_len++;
     stream->currsor++;
 
     return c;
@@ -246,7 +248,7 @@ int so_ferror(SO_FILE *stream) {
 
 SO_FILE *so_popen(const char *command, const char *type) {
     pid_t pid;
-    int status, r, fd = -1;
+    int fd = -1;
     int fields[2];
     SO_FILE *stream;
 
@@ -262,14 +264,15 @@ SO_FILE *so_popen(const char *command, const char *type) {
 	case 0:
 		/* child process */
         if (strstr(type, "r") != NULL) {
-            dup2(fields[1], STDOUT_FILENO);
             close(fields[0]);
+            dup2(fields[1], STDOUT_FILENO);
+
         } else if (strstr(type, "w") != NULL) {
-            dup2(fields[0], STDIN_FILENO);
             close(fields[1]);
+            dup2(fields[0], STDIN_FILENO);
         }
 
-        execlp("/bin/sh", "sh", "-c", command, NULL);
+        execlp("sh", "sh", "-c", command, NULL);
 
 		/* only if exec failed */
 		return NULL;
@@ -286,58 +289,51 @@ SO_FILE *so_popen(const char *command, const char *type) {
         close(fields[0]);
     }
 
-    stream = (SO_FILE*)malloc(sizeof(SO_FILE));
+    stream = init_so_file();
 
     if (stream == NULL)
         return NULL;
 
-    stream->buffer = (char *)calloc(BUFF_LEN, sizeof(char));
-
-    if (stream->buffer == NULL) {
-        return NULL;
-    }
-
-    stream->pid = pid;
     stream->fd = fd;
-    stream->buff_pos = 0;
-    stream->feof_flag = 0;
-    stream->ferror_flag = 0;
-    stream->buff_read_len = 0;
-    stream->last_op ='\0';
-    stream->currsor = 0;
+    stream->pid = pid;
 
     return stream;
 }
 
 int so_pclose(SO_FILE *stream) {
-    int pid, status, wait;
+    int pid, status, wait, r;
 
     pid = stream->pid;
-    so_fclose(stream);
+    r = so_fclose(stream);
+
+    if (r < 0) {
+        return SO_EOF;
+    }
+
     wait = waitpid(pid, &status, 0);
 
     if (wait < 0) {
-        return -1;
+        return SO_EOF;
     }
 
     return 0;
 }
 
 int so_fclose(SO_FILE *stream) {
-    int ret;
+    int r;
 
     if (stream->last_op == 'w') {
-        ret = so_fflush(stream);
-        if (ret < 0) {
+        r = so_fflush(stream);
+        if (r < 0) {
             free(stream->buffer);
             free(stream);
             return SO_EOF;
         }
     }
 
-    ret = close(stream->fd);
+    r = close(stream->fd);
 
-    if (ret < 0) {
+    if (r < 0) {
         free(stream->buffer);
         free(stream);
         return SO_EOF;
