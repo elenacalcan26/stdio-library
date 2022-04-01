@@ -32,7 +32,7 @@
 * pentru compilare se foloseste make / nmake 
 * in urma comenzilor rezulta biblioteca dinamaica libso_stdio.so / so_stdio.dll
 
-### Bibligrafie 
+### Bibliografie 
 ------------------------------------------------ 
 * https://ocw.cs.pub.ro/courses/so/laboratoare/laborator-02
 * https://ocw.cs.pub.ro/courses/so/laboratoare/laborator-03
